@@ -226,7 +226,11 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   
   // Get robot pose
   tf::Stamped<tf::Pose> robot_pose;
-  costmap_ros_->getRobotPose(robot_pose);
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("costmap_ros_->getRobotPose");
+    costmap_ros_->getRobotPose(robot_pose);
+  }
+  
   robot_pose_ = PoseSE2(robot_pose);
     
   // Get robot velocity
@@ -237,22 +241,31 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   robot_vel_.angular.z = tf::getYaw(robot_vel_tf.getRotation());
   
   // prune global plan to cut off parts of the past (spatially before the robot)
-  pruneGlobalPlan(*tf_, robot_pose, global_plan_);
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("pruneGlobalPlan");
+    pruneGlobalPlan(*tf_, robot_pose, global_plan_);
+  }
 
   // Transform global plan to the frame of interest (w.r.t. the local costmap)
   std::vector<geometry_msgs::PoseStamped> transformed_plan;
   int goal_idx;
   tf::StampedTransform tf_plan_to_global;
-  if (!transformGlobalPlan(*tf_, global_plan_, robot_pose, *costmap_, global_frame_, cfg_.trajectory.max_global_plan_lookahead_dist, 
-                           transformed_plan, &goal_idx, &tf_plan_to_global))
   {
-    ROS_WARN("Could not transform the global plan to the frame of the controller");
-    return false;
+    ExecutionTimer<std::chrono::milliseconds> timer("transformGlobalPlan");
+    if (!transformGlobalPlan(*tf_, global_plan_, robot_pose, *costmap_, global_frame_, cfg_.trajectory.max_global_plan_lookahead_dist, 
+                             transformed_plan, &goal_idx, &tf_plan_to_global))
+    {
+      ROS_WARN("Could not transform the global plan to the frame of the controller");
+      return false;
+    }
   }
 
   // update via-points container
   if (!custom_via_points_active_)
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("updateViaPointsContainer");
     updateViaPointsContainer(transformed_plan, cfg_.trajectory.global_plan_viapoint_sep);
+  }
 
   // check if global goal is reached
   tf::Stamped<tf::Pose> global_goal;
@@ -271,7 +284,10 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   
   
   // check if we should enter any backup mode and apply settings
-  configureBackupModes(transformed_plan, goal_idx);
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("configureBackupModes");
+    configureBackupModes(transformed_plan, goal_idx);
+  }
   
     
   // Return false if the transformed global plan is empty
@@ -288,7 +304,10 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   robot_goal_.y() = goal_point.getOrigin().getY();      
   if (cfg_.trajectory.global_plan_overwrite_orientation)
   {
-    robot_goal_.theta() = estimateLocalGoalOrientation(global_plan_, goal_point, goal_idx, tf_plan_to_global);
+    {
+      ExecutionTimer<std::chrono::milliseconds> timer("estimateLocalGoalOrientation");
+      robot_goal_.theta() = estimateLocalGoalOrientation(global_plan_, goal_point, goal_idx, tf_plan_to_global);
+    }
     // overwrite/update goal orientation of the transformed plan with the actual goal (enable using the plan as initialization)
     transformed_plan.back().pose.orientation = tf::createQuaternionMsgFromYaw(robot_goal_.theta());
   }  
@@ -308,10 +327,13 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   obstacles_.clear();
   
   // Update obstacle container with costmap information or polygons provided by a costmap_converter plugin
-  if (costmap_converter_)
-    updateObstacleContainerWithCostmapConverter();
-  else
-    updateObstacleContainerWithCostmap();
+  {
+      ExecutionTimer<std::chrono::milliseconds> timer("costmap_converter_");
+      if (costmap_converter_)
+        updateObstacleContainerWithCostmapConverter();
+      else
+        updateObstacleContainerWithCostmap();
+    }
   
   // also consider custom obstacles (must be called after other updates, since the container is not cleared)
   updateObstacleContainerWithCustomObstacles();
@@ -322,7 +344,12 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     
   // Now perform the actual planning
 //   bool success = planner_->plan(robot_pose_, robot_goal_, robot_vel_, cfg_.goal_tolerance.free_goal_vel); // straight line init
-  bool success = planner_->plan(transformed_plan, &robot_vel_, cfg_.goal_tolerance.free_goal_vel);
+  bool success;
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("planner_->plan");
+    success = planner_->plan(transformed_plan, &robot_vel_, cfg_.goal_tolerance.free_goal_vel);
+  }
+
   if (!success)
   {
     planner_->clearPlanner(); // force reinitialization for next time
@@ -342,7 +369,12 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     costmap_2d::calculateMinAndMaxDistances(footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius);
   }
 
-  bool feasible = planner_->isTrajectoryFeasible(costmap_model_.get(), footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius, cfg_.trajectory.feasibility_check_no_poses);
+  bool feasible;
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("isTrajectoryFeasible");
+    feasible = planner_->isTrajectoryFeasible(costmap_model_.get(), footprint_spec_, robot_inscribed_radius_, robot_circumscribed_radius, cfg_.trajectory.feasibility_check_no_poses);
+  }
+
   if (!feasible)
   {
     cmd_vel.linear.x = 0;
@@ -371,8 +403,11 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   }
   
   // Saturate velocity, if the optimization results violates the constraints (could be possible due to soft constraints).
-  saturateVelocity(cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z, cfg_.robot.max_vel_x, cfg_.robot.max_vel_y,
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("isTrajectoryFeasible");
+    saturateVelocity(cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z, cfg_.robot.max_vel_x, cfg_.robot.max_vel_y,
                    cfg_.robot.max_vel_theta, cfg_.robot.max_vel_x_backwards);
+  }
 
   // convert rot-vel to steering angle if desired (carlike robot).
   // The min_turning_radius is allowed to be slighly smaller since it is a soft-constraint
@@ -398,8 +433,11 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   // store last command (for recovery analysis etc.)
   last_cmd_ = cmd_vel;
   
-  // Now visualize everything    
-  planner_->visualize();
+  // Now visualize everything   
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("planner_->visualize()"); 
+    planner_->visualize();
+  }
   visualization_->publishObstacles(obstacles_);
   visualization_->publishViaPoints(via_points_);
   visualization_->publishGlobalPlan(global_plan_);

@@ -79,6 +79,7 @@
 // boost classes
 #include <boost/bind.hpp>
 #include <boost/shared_ptr.hpp>
+#include <costmap_2d/execution_timer.h>
 
 
 namespace teb_local_planner
