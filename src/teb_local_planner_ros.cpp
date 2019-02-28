@@ -346,6 +346,7 @@ bool TebLocalPlannerROS::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 //   bool success = planner_->plan(robot_pose_, robot_goal_, robot_vel_, cfg_.goal_tolerance.free_goal_vel); // straight line init
   bool success;
   {
+    //THIS IS THE HEAVIEST COMPUTING FUNCTION
     ExecutionTimer<std::chrono::milliseconds> timer("planner_->plan");
     success = planner_->plan(transformed_plan, &robot_vel_, cfg_.goal_tolerance.free_goal_vel);
   }

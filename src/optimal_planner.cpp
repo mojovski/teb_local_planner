@@ -39,6 +39,7 @@
 #include <teb_local_planner/optimal_planner.h>
 #include <map>
 #include <limits>
+#include <costmap_2d/execution_timer.h>
 
 
 namespace teb_local_planner
@@ -192,13 +193,19 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
 
     }
 
-    success = buildGraph(weight_multiplier);
+    {
+      ExecutionTimer<std::chrono::milliseconds> timer("TEB: buildGraph");
+      success = buildGraph(weight_multiplier);
+    }
     if (!success) 
     {
         clearGraph();
         return false;
     }
-    success = optimizeGraph(iterations_innerloop, false);
+    {
+      ExecutionTimer<std::chrono::milliseconds> timer("TEB: optimizeGraph");
+      success = optimizeGraph(iterations_innerloop, false);
+    }
     if (!success) 
     {
         clearGraph();
@@ -231,12 +238,18 @@ void TebOptimalPlanner::setVelocityGoal(const geometry_msgs::Twist& vel_goal)
   vel_goal_.second = vel_goal;
 }
 
-bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::PoseStamped>& initial_plan, const geometry_msgs::Twist* start_vel, bool free_goal_vel)
+bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::PoseStamped>& initial_plan, 
+  const geometry_msgs::Twist* start_vel, 
+  bool free_goal_vel)
 {    
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: TebOptimalPlanner::plan");
+
+  
   ROS_ASSERT_MSG(initialized_, "Call initialize() first.");
   if (!teb_.isInit())
   {
     // init trajectory
+    ExecutionTimer<std::chrono::milliseconds> timer("TEB: initTrajectoryToGoal");
     teb_.initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, cfg_->trajectory.global_plan_overwrite_orientation, cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
   } 
   else // warm start
@@ -244,10 +257,14 @@ bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::PoseStamped>& init
     PoseSE2 start_(initial_plan.front().pose);
     PoseSE2 goal_(initial_plan.back().pose);
     if (teb_.sizePoses()>0 && (goal_.position() - teb_.BackPose().position()).norm() < cfg_->trajectory.force_reinit_new_goal_dist) // actual warm start!
+    {
+      ExecutionTimer<std::chrono::milliseconds> timer("TEB: teb_.updateAndPruneTEB");
       teb_.updateAndPruneTEB(start_, goal_, cfg_->trajectory.min_samples); // update TEB
+    }
     else // goal too far away -> reinit
     {
       ROS_DEBUG("New goal: distance to existing goal is higher than the specified threshold. Reinitalizing trajectories.");
+      ExecutionTimer<std::chrono::milliseconds> timer("TEB: clearTimedElasticBand and initTrajectoryToGoal");
       teb_.clearTimedElasticBand();
       teb_.initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, true, cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
     }
@@ -260,7 +277,13 @@ bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::PoseStamped>& init
     vel_goal_.first = true; // we just reactivate and use the previously set velocity (should be zero if nothing was modified)
   
   // now optimize
-  return optimizeTEB(cfg_->optim.no_inner_iterations, cfg_->optim.no_outer_iterations);
+  bool res;
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("TEB: optimizeTEB");
+    res=optimizeTEB(cfg_->optim.no_inner_iterations, cfg_->optim.no_outer_iterations);
+  }
+  return res;
+
 }
 
 
@@ -298,12 +321,20 @@ bool TebOptimalPlanner::plan(const PoseSE2& start, const PoseSE2& goal, const ge
     vel_goal_.first = true; // we just reactivate and use the previously set velocity (should be zero if nothing was modified)
       
   // now optimize
-  return optimizeTEB(cfg_->optim.no_inner_iterations, cfg_->optim.no_outer_iterations);
+  bool res;
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("TEB: optimizeTEB");
+    res= optimizeTEB(cfg_->optim.no_inner_iterations, cfg_->optim.no_outer_iterations);
+  }
+  
+  return res;
 }
 
 
 bool TebOptimalPlanner::buildGraph(double weight_multiplier)
 {
+  ExecutionTimer<std::chrono::milliseconds> timer("TEB: buildGraph");
+
   if (!optimizer_->edges().empty() || !optimizer_->vertices().empty())
   {
     ROS_WARN("Cannot build graph, because it is not empty. Call graphClear()!");
@@ -343,6 +374,8 @@ bool TebOptimalPlanner::buildGraph(double weight_multiplier)
 
 bool TebOptimalPlanner::optimizeGraph(int no_iterations,bool clear_after)
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: optimizeGraph");
+
   if (cfg_->robot.max_vel_x<0.01)
   {
     ROS_WARN("optimizeGraph(): Robot Max Velocity is smaller than 0.01m/s. Optimizing aborted...");
@@ -360,7 +393,12 @@ bool TebOptimalPlanner::optimizeGraph(int no_iterations,bool clear_after)
   optimizer_->setVerbose(cfg_->optim.optimization_verbose);
   optimizer_->initializeOptimization();
 
-  int iter = optimizer_->optimize(no_iterations);
+
+  int iter = 0;
+  {
+    ExecutionTimer<std::chrono::milliseconds> timer("TEB: optimizer_->optimize");
+    iter=optimizer_->optimize(no_iterations);
+  }
 
   // Save Hessian for visualization
   //  g2o::OptimizationAlgorithmLevenberg* lm = dynamic_cast<g2o::OptimizationAlgorithmLevenberg*> (optimizer_->solver());
@@ -407,6 +445,8 @@ void TebOptimalPlanner::AddTEBVertices()
 
 void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesObstacles");
+
   if (cfg_->optim.weight_obstacle==0 || weight_multiplier==0 || obstacles_==nullptr )
     return; // if weight equals zero skip adding edges!
     
@@ -540,6 +580,9 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
 
 void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesObstaclesLegacy");
+
+
   if (cfg_->optim.weight_obstacle==0 || weight_multiplier==0 || obstacles_==nullptr)
     return; // if weight equals zero skip adding edges!
 
@@ -635,6 +678,10 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
 
 void TebOptimalPlanner::AddEdgesDynamicObstacles(double weight_multiplier)
 {
+
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesDynamicObstacles");
+
+
   if (cfg_->optim.weight_obstacle==0 || weight_multiplier==0 || obstacles_==NULL )
     return; // if weight equals zero skip adding edges!
 
@@ -664,6 +711,9 @@ void TebOptimalPlanner::AddEdgesDynamicObstacles(double weight_multiplier)
 
 void TebOptimalPlanner::AddEdgesViaPoints()
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesViaPoints");
+
+
   if (cfg_->optim.weight_viapoint==0 || via_points_==NULL || via_points_->empty() )
     return; // if weight equals zero skip adding edges!
 
@@ -709,6 +759,9 @@ void TebOptimalPlanner::AddEdgesViaPoints()
 
 void TebOptimalPlanner::AddEdgesVelocity()
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesVelocity");
+
+
   if (cfg_->robot.max_vel_y == 0) // non-holonomic robot
   {
     if ( cfg_->optim.weight_max_vel_x==0 && cfg_->optim.weight_max_vel_theta==0)
@@ -760,6 +813,9 @@ void TebOptimalPlanner::AddEdgesVelocity()
 
 void TebOptimalPlanner::AddEdgesAcceleration()
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesAcceleration");
+
+
   if (cfg_->optim.weight_acc_lim_x==0  && cfg_->optim.weight_acc_lim_theta==0) 
     return; // if weight equals zero skip adding edges!
 
@@ -866,6 +922,9 @@ void TebOptimalPlanner::AddEdgesAcceleration()
 
 void TebOptimalPlanner::AddEdgesTimeOptimal()
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesTimeOptimal");
+
+
   if (cfg_->optim.weight_optimaltime==0) 
     return; // if weight equals zero skip adding edges!
 
@@ -886,6 +945,9 @@ void TebOptimalPlanner::AddEdgesTimeOptimal()
 
 void TebOptimalPlanner::AddEdgesKinematicsDiffDrive()
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesKinematicsDiffDrive");
+
+
   if (cfg_->optim.weight_kinematics_nh==0 && cfg_->optim.weight_kinematics_forward_drive==0)
     return; // if weight equals zero skip adding edges!
   
@@ -908,6 +970,9 @@ void TebOptimalPlanner::AddEdgesKinematicsDiffDrive()
 
 void TebOptimalPlanner::AddEdgesKinematicsCarlike()
 {
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: AddEdgesKinematicsCarlike");
+
+
   if (cfg_->optim.weight_kinematics_nh==0 && cfg_->optim.weight_kinematics_turning_radius==0)
     return; // if weight equals zero skip adding edges!
 
@@ -969,6 +1034,8 @@ void TebOptimalPlanner::AddEdgesPreferRotDir()
 
 void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoint_cost_scale, bool alternative_time_cost)
 { 
+  ExecutionTimer<std::chrono::milliseconds> timer_fcn("TEB: computeCurrentCost");
+
   // check if graph is empty/exist  -> important if function is called between buildGraph and optimizeGraph/clearGraph
   bool graph_exist_flag(false);
   if (optimizer_->edges().empty() && optimizer_->vertices().empty())
